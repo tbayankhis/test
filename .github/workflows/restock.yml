@@ -64,7 +64,9 @@ jobs:
           const res = await fetch(API_URL, {
             headers: {
               "Accept": "application/json",
-              "User-Agent": "GitHub-Actions-Stock-Checker"
+              "Origin": "https://growagarden2wiki.net",
+              "Referer": "https://growagarden2wiki.net/",
+              "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
             }
           });
 
