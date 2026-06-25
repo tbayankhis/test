@@ -36,6 +36,12 @@ jobs:
             { name: "Aurora", emoji: "🌌" },
           ];
 
+          // Normalize a weather string so "Bloodmoon", "blood_moon",
+          // "blood-moon", "Blood Moon" all compare equal.
+          function normWeather(s) {
+            return String(s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+          }
+
           async function sendTelegram(text) {
             const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
 
@@ -93,7 +99,7 @@ jobs:
             const stillActive = endsAt > Date.now();
             if (stillActive) {
               weatherHit = WEATHER_TARGETS.find(
-                t => t.name.toLowerCase() === String(weather.type || "").toLowerCase()
+                t => normWeather(t.name) === normWeather(weather.type)
               ) || null;
             } else {
               console.log(`Weather '${weather.type}' marked active but ended at ${weather.endsAt}; ignoring.`);
