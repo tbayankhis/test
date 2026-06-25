@@ -1,4 +1,4 @@
-name: GAG Seed Restock Check
+name: Restock Check
 
 on:
   workflow_dispatch:

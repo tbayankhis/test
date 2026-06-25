@@ -1,4 +1,4 @@
-name: GAG Prediction Check
+name: Prediction Check
 
 on:
   workflow_dispatch:
