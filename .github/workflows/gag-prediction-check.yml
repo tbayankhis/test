@@ -1,0 +1,125 @@
+name: GAG Prediction Check
+
+on:
+  workflow_dispatch:
+
+jobs:
+  predict:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check upcoming stock predictions and notify Telegram
+        run: |
+          node <<'NODE'
+          const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+          const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+
+          const API_URL = "https://api.growagarden2wiki.net/api/v1/games/grow-a-garden-2/predictions";
+
+          // How far ahead (seconds) before nextAt we send the heads-up.
+          // Tuned to the ~5 min check interval so each item alerts ~once.
+          const LEAD_SECONDS = 6 * 60;
+
+          // Wanted items, matched by stable `id` (names vary, e.g.
+          // "Dragon's Breath" vs "Dragons Breath").
+          const SEED_TARGETS = [
+            { id: "moon-bloom", name: "Moon Bloom", emoji: "🌙" },
+            { id: "dragons-breath", name: "Dragon's Breath", emoji: "🐉" },
+          ];
+
+          const GEAR_TARGETS = [
+            { id: "super-sprinkler", name: "Super Sprinkler", emoji: "💦" },
+            { id: "super-watering-can", name: "Super Watering Can", emoji: "🪣" },
+            { id: "legendary-sprinkler", name: "Legendary Sprinkler", emoji: "🌟" },
+          ];
+
+          function fmtTime(seconds) {
+            if (!seconds) return "-";
+            return new Date(seconds * 1000).toLocaleString("en-US", {
+              timeZone: "Asia/Ulaanbaatar",
+              hour12: false,
+            });
+          }
+
+          async function sendTelegram(text) {
+            const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
+
+            const res = await fetch(url, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                chat_id: CHAT_ID,
+                text,
+                disable_web_page_preview: true,
+              }),
+            });
+
+            if (!res.ok) {
+              const err = await res.text();
+              throw new Error(`Telegram failed: ${res.status} ${err}`);
+            }
+          }
+
+          const res = await fetch(API_URL, {
+            headers: {
+              "Accept": "application/json",
+              "User-Agent": "GitHub-Actions-Stock-Checker"
+            }
+          });
+
+          if (!res.ok) {
+            throw new Error(`API failed: ${res.status}`);
+          }
+
+          const data = await res.json();
+          const shops = data.shops || {};
+          const nowSec = Math.floor(Date.now() / 1000);
+
+          // Find wanted items whose nextAt is within the lead window.
+          function matchUpcoming(shop, targets) {
+            const list = (shop && shop.eachItem) || [];
+            return targets
+              .map(t => {
+                const item = list.find(i => i.id === t.id);
+                if (!item || !item.nextAt) return null;
+                const delta = item.nextAt - nowSec;
+                if (delta > 0 && delta <= LEAD_SECONDS) {
+                  return { ...t, nextAt: item.nextAt, quantity: item.quantity ?? "-", minsLeft: Math.round(delta / 60) };
+                }
+                return null;
+              })
+              .filter(Boolean);
+          }
+
+          const seedHits = matchUpcoming(shops.seeds, SEED_TARGETS);
+          const gearHits = matchUpcoming(shops.gear, GEAR_TARGETS);
+
+          if (seedHits.length === 0 && gearHits.length === 0) {
+            console.log("No wanted items coming up soon. No notification sent.");
+            process.exit(0);
+          }
+
+          let msg = "⏰ INCOMING WANTED ITEMS! ⏰\n";
+
+          if (seedHits.length > 0) {
+            msg += "\n🌱 SEEDS\n";
+            for (const s of seedHits) {
+              msg += `${s.emoji} ${s.name}\n📦 Qty: ${s.quantity}\n🕐 In ~${s.minsLeft} min (${fmtTime(s.nextAt)})\n`;
+            }
+          }
+
+          if (gearHits.length > 0) {
+            msg += "\n⚙️ GEAR\n";
+            for (const g of gearHits) {
+              msg += `${g.emoji} ${g.name}\n📦 Qty: ${g.quantity}\n🕐 In ~${g.minsLeft} min (${fmtTime(g.nextAt)})\n`;
+            }
+          }
+
+          await sendTelegram(msg.trimEnd());
+
+          const found = [...seedHits, ...gearHits].map(x => x.name);
+          console.log("Upcoming:", found.join(", "));
+          NODE
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
