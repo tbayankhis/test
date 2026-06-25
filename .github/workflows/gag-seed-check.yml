@@ -8,18 +8,32 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check seed stock and notify Telegram
+      - name: Check stock and notify Telegram
         run: |
           node <<'NODE'
           const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
           const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-          const API_URL = "https://gag.gg/api/ext/sync";
+          const API_URL = "https://api.growagarden2wiki.net/api/v1/games/grow-a-garden-2/stock";
 
-          // Seeds we care about, with their display emoji.
-          const TARGETS = [
+          // Items we want notifications for, with their display emoji.
+          const SEED_TARGETS = [
             { name: "Moon Bloom", emoji: "🌙" },
             { name: "Dragon's Breath", emoji: "🐉" },
+          ];
+
+          const GEAR_TARGETS = [
+            { name: "Super Sprinkler", emoji: "💦" },
+            { name: "Super Watering Can", emoji: "🪣" },
+            { name: "Legendary Sprinkler", emoji: "🌟" },
+          ];
+
+          // Weather types are compared case-insensitively against weather.type.
+          const WEATHER_TARGETS = [
+            { name: "Lightning", emoji: "⚡" },
+            { name: "Starfall", emoji: "💫" },
+            { name: "Bloodmoon", emoji: "🌑" },
+            { name: "Aurora", emoji: "🌌" },
           ];
 
           async function sendTelegram(text) {
@@ -53,28 +67,73 @@ jobs:
           }
 
           const data = await res.json();
-          const seeds = data.seeds || [];
+          const stock = data.stock || {};
+          const seeds = stock.seeds || [];
+          const gear = stock.gear || [];
+          const weather = stock.weather || null;
 
-          // Wanted seeds that are in stock right now.
-          const notify = TARGETS
-            .map(t => {
-              const item = seeds.find(s => s.name === t.name && s.inStockNow === true);
-              return item ? { ...t, lastQty: item.lastQty ?? "-" } : null;
-            })
-            .filter(Boolean);
+          // Match wanted seeds / gear that are currently in stock.
+          function matchStock(list, targets) {
+            return targets
+              .map(t => {
+                const item = list.find(s => s.name === t.name);
+                return item ? { ...t, quantity: item.quantity ?? "-" } : null;
+              })
+              .filter(Boolean);
+          }
 
-          if (notify.length === 0) {
-            console.log("No wanted seeds in stock. No notification sent.");
+          const seedHits = matchStock(seeds, SEED_TARGETS);
+          const gearHits = matchStock(gear, GEAR_TARGETS);
+
+          // Weather is a single object. The API's `active` flag is unreliable
+          // (it can stay true long after endsAt), so verify against endsAt too.
+          let weatherHit = null;
+          if (weather && weather.active === true) {
+            const endsAt = weather.endsAt ? new Date(weather.endsAt).getTime() : 0;
+            const stillActive = endsAt > Date.now();
+            if (stillActive) {
+              weatherHit = WEATHER_TARGETS.find(
+                t => t.name.toLowerCase() === String(weather.type || "").toLowerCase()
+              ) || null;
+            } else {
+              console.log(`Weather '${weather.type}' marked active but ended at ${weather.endsAt}; ignoring.`);
+            }
+          }
+
+          if (seedHits.length === 0 && gearHits.length === 0 && !weatherHit) {
+            console.log("Nothing wanted in stock. No notification sent.");
             process.exit(0);
           }
 
-          let msg = "🚨🚨 WANTED SEEDS FOUND! 🚨🚨\n";
-          for (const seed of notify) {
-            msg += `\n${seed.emoji} ${seed.name}\n📦 Qty: ${seed.lastQty}\n`;
+          let msg = "🚨🚨 WANTED ITEMS FOUND! 🚨🚨\n";
+
+          if (seedHits.length > 0) {
+            msg += "\n🌱 SEEDS\n";
+            for (const s of seedHits) {
+              msg += `${s.emoji} ${s.name}\n📦 Qty: ${s.quantity}\n`;
+            }
+          }
+
+          if (gearHits.length > 0) {
+            msg += "\n⚙️ GEAR\n";
+            for (const g of gearHits) {
+              msg += `${g.emoji} ${g.name}\n📦 Qty: ${g.quantity}\n`;
+            }
+          }
+
+          if (weatherHit) {
+            msg += "\n🌦 WEATHER\n";
+            msg += `${weatherHit.emoji} ${weatherHit.name} (active now)\n`;
           }
 
           await sendTelegram(msg.trimEnd());
-          console.log("Wanted seed found:", notify.map(x => x.name).join(", "));
+
+          const found = [
+            ...seedHits.map(x => x.name),
+            ...gearHits.map(x => x.name),
+            ...(weatherHit ? [weatherHit.name] : []),
+          ];
+          console.log("Wanted found:", found.join(", "));
           NODE
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
