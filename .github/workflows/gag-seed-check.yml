@@ -1,0 +1,118 @@
+name: GAG Seed Restock Check
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check seed stock and notify Telegram
+        run: |
+          node <<'NODE'
+          const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+          const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+
+          const API_URL = "https://gag.gg/api/ext/sync";
+          const TARGETS = ["Moon Bloom", "Dragon's Breath"];
+
+          async function sendTelegram(text) {
+            const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
+
+            const res = await fetch(url, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                chat_id: CHAT_ID,
+                text,
+                parse_mode: "HTML",
+                disable_web_page_preview: true,
+              }),
+            });
+
+            if (!res.ok) {
+              const err = await res.text();
+              throw new Error(`Telegram failed: ${res.status} ${err}`);
+            }
+          }
+
+          function fmtTime(seconds) {
+            if (!seconds) return "-";
+            return new Date(seconds * 1000).toLocaleString("en-US", {
+              timeZone: "Asia/Ulaanbaatar",
+              hour12: false,
+            });
+          }
+
+          function esc(s) {
+            return String(s ?? "")
+              .replace(/&/g, "&amp;")
+              .replace(/</g, "&lt;")
+              .replace(/>/g, "&gt;");
+          }
+
+          const res = await fetch(API_URL, {
+            headers: {
+              "Accept": "application/json",
+              "User-Agent": "GitHub-Actions-Stock-Checker"
+            }
+          });
+
+          if (!res.ok) {
+            throw new Error(`API failed: ${res.status}`);
+          }
+
+          const data = await res.json();
+          const seeds = data.seeds || [];
+
+          const inStockItems = seeds.filter(item => item.inStockNow === true);
+
+          const targetInStock = inStockItems.filter(item =>
+            TARGETS.includes(item.name)
+          );
+
+          const allInStockText = inStockItems.length > 0
+            ? inStockItems.map(item => {
+                const isTarget = TARGETS.includes(item.name);
+                const icon = isTarget ? "🚨" : "✅";
+
+                return `${icon} <b>${esc(item.name)}</b> [${esc(item.rarity)}]\nQty: ${item.lastQty ?? "-"}`;
+              }).join("\n\n")
+            : "No seeds in stock now.";
+
+          const nextRestock = fmtTime(data.nextRestock);
+          const secondsLeft = data.secondsLeft ?? "-";
+
+          let msg = "";
+
+          if (targetInStock.length > 0) {
+            msg += "🚨🚨🚨 <b>WANTED SEED IN STOCK!</b> 🚨🚨🚨\n\n";
+            msg += targetInStock.map(item =>
+              `🔥 <b>${esc(item.name)}</b>\nQty: ${item.lastQty ?? "-"}\nRarity: ${esc(item.rarity)}`
+            ).join("\n\n");
+            msg += "\n\n━━━━━━━━━━━━━━\n\n";
+          } else {
+            msg += "🌱 <b>Seed Stock Update</b>\n\n";
+          }
+
+          msg += "<b>Current In Stock:</b>\n\n";
+          msg += allInStockText;
+          msg += "\n\n━━━━━━━━━━━━━━\n";
+          msg += `⏭ <b>Next restock:</b> ${esc(nextRestock)}\n`;
+          msg += `⏳ <b>Seconds left:</b> ${secondsLeft}\n`;
+          msg += `🔍 <b>Watching:</b> ${TARGETS.map(esc).join(", ")}`;
+
+          await sendTelegram(msg);
+
+          if (targetInStock.length > 0) {
+            console.log("Wanted seed found:", targetInStock.map(x => x.name).join(", "));
+          } else {
+            console.log("Stock update sent. No wanted seeds in stock.");
+          }
+          NODE
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
