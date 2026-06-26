@@ -13,13 +13,19 @@ jobs:
           node <<'NODE'
           const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
           const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+          const API_BASE_URL = process.env.GAG_API_BASE_URL;
 
-          const API_URL = "https://api.growagarden2wiki.net/api/v1/games/grow-a-garden-2/stock";
+          if (!API_BASE_URL) {
+            throw new Error("Missing GAG_API_BASE_URL variable.");
+          }
+
+          const API_URL = `${API_BASE_URL.replace(/\/+$/, "")}/stock`;
 
           // Items we want notifications for, with their display emoji.
           const SEED_TARGETS = [
             { name: "Moon Bloom", emoji: "🌙" },
             { name: "Dragon's Breath", emoji: "🐉" },
+            { name: "Venom Spitter", emoji: "☠️" },
           ];
 
           const GEAR_TARGETS = [
@@ -113,26 +119,45 @@ jobs:
             process.exit(0);
           }
 
-          let msg = "🚨🚨 WANTED ITEMS FOUND! 🚨🚨\n";
+          function itemText(item) {
+            return [
+              `${item.emoji} ${item.name}`,
+              `   📦 Тоо: ${item.quantity}`,
+            ].join("\n");
+          }
+
+          function weatherText(item) {
+            return [
+              `${item.emoji} ${item.name}`,
+              "   ✅ Одоо active байна",
+            ].join("\n");
+          }
+
+          let msg = [
+            "🚨 Хүссэн зүйл чинь stock дээр байна!",
+            "",
+            "Дэлгүүрээ шалгаад амжиж аваарай.",
+          ].join("\n");
 
           if (seedHits.length > 0) {
-            msg += "\n🌱 SEEDS\n";
+            msg += "\n\n🌱 Seeds";
             for (const s of seedHits) {
-              msg += `${s.emoji} ${s.name}\n📦 Qty: ${s.quantity}\n`;
+              msg += `\n\n${itemText(s)}`;
             }
           }
 
           if (gearHits.length > 0) {
-            msg += "\n⚙️ GEAR\n";
+            msg += "\n\n⚙️ Gear";
             for (const g of gearHits) {
-              msg += `${g.emoji} ${g.name}\n📦 Qty: ${g.quantity}\n`;
+              msg += `\n\n${itemText(g)}`;
             }
           }
 
           if (weatherHit) {
-            msg += "\n🌦 WEATHER\n";
-            msg += `${weatherHit.emoji} ${weatherHit.name} (active now)\n`;
+            msg += `\n\n🌦 Weather\n\n${weatherText(weatherHit)}`;
           }
+
+          msg += "\n\n✅ Амжиж аваарай!";
 
           await sendTelegram(msg.trimEnd());
 
@@ -144,5 +169,6 @@ jobs:
           console.log("Wanted found:", found.join(", "));
           NODE
         env:
+          GAG_API_BASE_URL: ${{ vars.GAG_API_BASE_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

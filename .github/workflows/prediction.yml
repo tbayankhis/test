@@ -13,8 +13,13 @@ jobs:
           node <<'NODE'
           const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
           const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+          const API_BASE_URL = process.env.GAG_API_BASE_URL;
 
-          const API_URL = "https://api.growagarden2wiki.net/api/v1/games/grow-a-garden-2/predictions";
+          if (!API_BASE_URL) {
+            throw new Error("Missing GAG_API_BASE_URL variable.");
+          }
+
+          const API_URL = `${API_BASE_URL.replace(/\/+$/, "")}/predictions`;
 
           // How far ahead (seconds) before nextAt we send the heads-up.
           // Tuned to the ~5 min check interval so each item alerts ~once.
@@ -25,12 +30,17 @@ jobs:
           const SEED_TARGETS = [
             { id: "moon-bloom", name: "Moon Bloom", emoji: "🌙" },
             { id: "dragons-breath", name: "Dragon's Breath", emoji: "🐉" },
+            { id: "venom-spitter", name: "Venom Spitter", emoji: "☠️" },
           ];
 
           const GEAR_TARGETS = [
             { id: "super-sprinkler", name: "Super Sprinkler", emoji: "💦" },
             { id: "super-watering-can", name: "Super Watering Can", emoji: "🪣" },
             { id: "legendary-sprinkler", name: "Legendary Sprinkler", emoji: "🌟" },
+          ];
+
+          const MOON_TARGETS = [
+            { type: "rainbow-moon", name: "Rainbow Moon", emoji: "🌈" },
           ];
 
           function fmtTime(seconds) {
@@ -93,35 +103,83 @@ jobs:
               .filter(Boolean);
           }
 
+          function matchMoonEvents(moons, targets) {
+            const events = (moons && moons.events) || [];
+            return events
+              .map(event => {
+                const target = targets.find(t => t.type === event.type);
+                if (!target || !event.at) return null;
+                const delta = event.at - nowSec;
+                if (delta > 0 && delta <= LEAD_SECONDS) {
+                  return { ...target, at: event.at, minsLeft: Math.round(delta / 60) };
+                }
+                return null;
+              })
+              .filter(Boolean)
+              .sort((a, b) => a.at - b.at);
+          }
+
           const seedHits = matchUpcoming(shops.seeds, SEED_TARGETS);
           const gearHits = matchUpcoming(shops.gear, GEAR_TARGETS);
+          const moonHits = matchMoonEvents(data.moons, MOON_TARGETS);
 
-          if (seedHits.length === 0 && gearHits.length === 0) {
+          if (seedHits.length === 0 && gearHits.length === 0 && moonHits.length === 0) {
             console.log("No wanted items coming up soon. No notification sent.");
             process.exit(0);
           }
 
-          let msg = "⏰ INCOMING WANTED ITEMS! ⏰\n";
+          function itemText(item) {
+            return [
+              `${item.emoji} ${item.name}`,
+              `   📦 Тоо: ${item.quantity}`,
+              `   🕐 Ойролцоогоор ${item.minsLeft} минутын дараа`,
+              `   📅 Цаг: ${fmtTime(item.nextAt)}`,
+            ].join("\n");
+          }
+
+          function moonText(event) {
+            return [
+              `${event.emoji} ${event.name}`,
+              `   🕐 Ойролцоогоор ${event.minsLeft} минутын дараа`,
+              `   📅 Цаг: ${fmtTime(event.at)}`,
+            ].join("\n");
+          }
+
+          let msg = [
+            "⏰ Хүссэн зүйл/event чинь удахгүй болно!",
+            "",
+            "Бэлэн байгаарай, stock солигдох дөхөж байна.",
+          ].join("\n");
 
           if (seedHits.length > 0) {
-            msg += "\n🌱 SEEDS\n";
+            msg += "\n\n🌱 Seeds";
             for (const s of seedHits) {
-              msg += `${s.emoji} ${s.name}\n📦 Qty: ${s.quantity}\n🕐 In ~${s.minsLeft} min (${fmtTime(s.nextAt)})\n`;
+              msg += `\n\n${itemText(s)}`;
             }
           }
 
           if (gearHits.length > 0) {
-            msg += "\n⚙️ GEAR\n";
+            msg += "\n\n⚙️ Gear";
             for (const g of gearHits) {
-              msg += `${g.emoji} ${g.name}\n📦 Qty: ${g.quantity}\n🕐 In ~${g.minsLeft} min (${fmtTime(g.nextAt)})\n`;
+              msg += `\n\n${itemText(g)}`;
             }
           }
 
+          if (moonHits.length > 0) {
+            msg += "\n\n🌙 Moons & Weather";
+            for (const m of moonHits) {
+              msg += `\n\n${moonText(m)}`;
+            }
+          }
+
+          msg += "\n\n✅ Амжиж аваарай!";
+
           await sendTelegram(msg.trimEnd());
 
-          const found = [...seedHits, ...gearHits].map(x => x.name);
+          const found = [...seedHits, ...gearHits, ...moonHits].map(x => x.name);
           console.log("Upcoming:", found.join(", "));
           NODE
         env:
+          GAG_API_BASE_URL: ${{ vars.GAG_API_BASE_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
