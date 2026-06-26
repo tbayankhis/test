@@ -40,7 +40,10 @@ jobs:
           ];
 
           const MOON_TARGETS = [
-            { type: "rainbow-moon", name: "Rainbow Moon", emoji: "🌈" },
+            { type: "lightning", name: "Lightning", emoji: "⚡" },
+            { type: "starfall", name: "Starfall", emoji: "💫" },
+            { type: "bloodmoon", name: "Bloodmoon", emoji: "🌑" },
+            { type: "aurora", name: "Aurora", emoji: "🌌" },
           ];
 
           function fmtTime(seconds) {

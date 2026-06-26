@@ -36,17 +36,11 @@ jobs:
 
           // Weather types are compared case-insensitively against weather.type.
           const WEATHER_TARGETS = [
-            { name: "Lightning", emoji: "⚡" },
-            { name: "Starfall", emoji: "💫" },
-            { name: "Bloodmoon", emoji: "🌑" },
-            { name: "Aurora", emoji: "🌌" },
+            { name: "Lightning", type: "lightning", emoji: "⚡" },
+            { name: "Starfall", type: "starfall", emoji: "💫" },
+            { name: "Bloodmoon", type: "bloodmoon", emoji: "🌑" },
+            { name: "Aurora", type: "aurora", emoji: "🌌" },
           ];
-
-          // Normalize a weather string so "Bloodmoon", "blood_moon",
-          // "blood-moon", "Blood Moon" all compare equal.
-          function normWeather(s) {
-            return String(s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
-          }
 
           async function sendTelegram(text) {
             const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
@@ -107,7 +101,7 @@ jobs:
             const stillActive = endsAt > Date.now();
             if (stillActive) {
               weatherHit = WEATHER_TARGETS.find(
-                t => normWeather(t.name) === normWeather(weather.type)
+                t => t.type === weather.type
               ) || null;
             } else {
               console.log(`Weather '${weather.type}' marked active but ended at ${weather.endsAt}; ignoring.`);
