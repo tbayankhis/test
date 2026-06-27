@@ -3,16 +3,22 @@ name: Prediction Check
 on:
   workflow_dispatch:
 
+concurrency:
+  group: prediction-check
+  cancel-in-progress: false
+
 jobs:
   predict:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check upcoming stock predictions and notify Telegram
+      - name: Check upcoming stock predictions
+        id: check
         run: |
-          node <<'NODE'
-          const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-          const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+          node --input-type=module <<'NODE'
+          import crypto from "node:crypto";
+          import fs from "node:fs";
+
           const API_BASE_URL = process.env.GAG_API_BASE_URL;
 
           if (!API_BASE_URL) {
@@ -39,37 +45,46 @@ jobs:
             { id: "legendary-sprinkler", name: "Legendary Sprinkler", emoji: "🌟" },
           ];
 
-          const MOON_TARGETS = [
-            { type: "lightning", name: "Lightning", emoji: "⚡" },
-            { type: "blood-moon", name: "Bloodmoon", emoji: "🌑" },
-            { type: "aurora-borealis", name: "Aurora", emoji: "🌌" },
-          ];
+          const WEATHER_EMOJIS = {
+            lightning: "⚡",
+            "blood-moon": "🌑",
+            "aurora-borealis": "🌌",
+          };
 
-          function fmtTime(seconds) {
-            if (!seconds) return "-";
-            return new Date(seconds * 1000).toLocaleString("en-US", {
+          function titleFromType(type) {
+            return String(type || "Unknown")
+              .split(/[-_\s]+/)
+              .filter(Boolean)
+              .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+              .join(" ");
+          }
+
+          function getTimeValue(obj, names) {
+            for (const name of names) {
+              if (obj && obj[name]) return obj[name];
+            }
+            return null;
+          }
+
+          function toUnixSeconds(value) {
+            if (!value) return null;
+            if (typeof value === "number") return value;
+            const ms = new Date(value).getTime();
+            return Number.isNaN(ms) ? null : Math.floor(ms / 1000);
+          }
+
+          function fmtTime(value) {
+            if (!value) return "-";
+            const date = typeof value === "number" ? new Date(value * 1000) : new Date(value);
+            if (Number.isNaN(date.getTime())) return String(value);
+            return date.toLocaleString("en-US", {
               timeZone: "Asia/Ulaanbaatar",
               hour12: false,
             });
           }
 
-          async function sendTelegram(text) {
-            const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
-
-            const res = await fetch(url, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                chat_id: CHAT_ID,
-                text,
-                disable_web_page_preview: true,
-              }),
-            });
-
-            if (!res.ok) {
-              const err = await res.text();
-              throw new Error(`Telegram failed: ${res.status} ${err}`);
-            }
+          function setOutput(name, value) {
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`);
           }
 
           const res = await fetch(API_URL, {
@@ -105,28 +120,38 @@ jobs:
               .filter(Boolean);
           }
 
-          function matchMoonEvents(moons, targets) {
+          function matchMoonEvents(moons) {
             const events = (moons && moons.events) || [];
             return events
               .map(event => {
-                const target = targets.find(t => t.type === event.type);
-                if (!target || !event.at) return null;
-                const delta = event.at - nowSec;
+                const startsAt = getTimeValue(event, ["at", "startsAt", "startedAt", "startAt", "startTime"]);
+                const startsAtSec = toUnixSeconds(startsAt);
+                if (!startsAtSec) return null;
+                const delta = startsAtSec - nowSec;
                 if (delta > 0 && delta <= LEAD_SECONDS) {
-                  return { ...target, at: event.at, minsLeft: Math.round(delta / 60) };
+                  const type = event.type || "unknown";
+                  return {
+                    type,
+                    name: event.name || titleFromType(type),
+                    emoji: WEATHER_EMOJIS[type] || "🌦",
+                    startsAt,
+                    endsAt: getTimeValue(event, ["endsAt", "endAt", "endTime"]),
+                    minsLeft: Math.round(delta / 60),
+                  };
                 }
                 return null;
               })
               .filter(Boolean)
-              .sort((a, b) => a.at - b.at);
+              .sort((a, b) => toUnixSeconds(a.startsAt) - toUnixSeconds(b.startsAt));
           }
 
           const seedHits = matchUpcoming(shops.seeds, SEED_TARGETS);
           const gearHits = matchUpcoming(shops.gear, GEAR_TARGETS);
-          const moonHits = matchMoonEvents(data.moons, MOON_TARGETS);
+          const moonHits = matchMoonEvents(data.moons);
 
           if (seedHits.length === 0 && gearHits.length === 0 && moonHits.length === 0) {
             console.log("No wanted items coming up soon. No notification sent.");
+            setOutput("has_hits", "false");
             process.exit(0);
           }
 
@@ -142,8 +167,10 @@ jobs:
           function moonText(event) {
             return [
               `${event.emoji} ${event.name}`,
+              `   🧾 Type: ${event.type}`,
               `   🕐 Ойролцоогоор ${event.minsLeft} минутын дараа`,
-              `   📅 Цаг: ${fmtTime(event.at)}`,
+              `   🟢 Эхлэх: ${fmtTime(event.startsAt)}`,
+              `   🔴 Дуусах: ${fmtTime(event.endsAt)}`,
             ].join("\n");
           }
 
@@ -176,12 +203,77 @@ jobs:
 
           msg += "\n\n✅ Амжиж аваарай!";
 
-          await sendTelegram(msg.trimEnd());
+          const fingerprint = {
+            seeds: seedHits.map(({ id, nextAt, quantity }) => ({ id, nextAt, quantity })),
+            gear: gearHits.map(({ id, nextAt, quantity }) => ({ id, nextAt, quantity })),
+            moons: moonHits.map(({ type, name, startsAt, endsAt }) => ({ type, name, startsAt, endsAt })),
+          };
+          const hash = crypto
+            .createHash("sha256")
+            .update(JSON.stringify(fingerprint))
+            .digest("hex")
+            .slice(0, 32);
+          const cacheKey = `gag-prediction-alert-v2-${hash}`;
+
+          fs.mkdirSync("alert-state", { recursive: true });
+          fs.writeFileSync(`alert-state/${cacheKey}`, JSON.stringify(fingerprint, null, 2));
+
+          setOutput("has_hits", "true");
+          setOutput("cache_key", cacheKey);
+          setOutput("message_b64", Buffer.from(msg.trimEnd(), "utf8").toString("base64"));
 
           const found = [...seedHits, ...gearHits, ...moonHits].map(x => x.name);
           console.log("Upcoming:", found.join(", "));
           NODE
         env:
           GAG_API_BASE_URL: ${{ secrets.GAG_API_BASE_URL }}
+
+      - name: Check alert cache
+        id: alert-cache
+        if: steps.check.outputs.has_hits == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: alert-state
+          key: ${{ steps.check.outputs.cache_key }}
+
+      - name: Send Telegram notification
+        if: steps.check.outputs.has_hits == 'true' && steps.alert-cache.outputs.cache-hit != 'true'
+        run: |
+          node --input-type=module <<'NODE'
+          const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+          const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+          const text = Buffer.from(process.env.TELEGRAM_MESSAGE_B64, "base64").toString("utf8");
+
+          async function sendTelegram(text) {
+            const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
+
+            const res = await fetch(url, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                chat_id: CHAT_ID,
+                text,
+                disable_web_page_preview: true,
+              }),
+            });
+
+            if (!res.ok) {
+              const err = await res.text();
+              throw new Error(`Telegram failed: ${res.status} ${err}`);
+            }
+          }
+
+          await sendTelegram(text);
+          NODE
+        env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_MESSAGE_B64: ${{ steps.check.outputs.message_b64 }}
+
+      - name: Save alert cache
+        if: steps.check.outputs.has_hits == 'true' && steps.alert-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: alert-state
+          key: ${{ steps.check.outputs.cache_key }}

@@ -3,16 +3,22 @@ name: Restock Check
 on:
   workflow_dispatch:
 
+concurrency:
+  group: restock-check
+  cancel-in-progress: false
+
 jobs:
   check:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check stock and notify Telegram
+      - name: Check stock
+        id: check
         run: |
-          node <<'NODE'
-          const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-          const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+          node --input-type=module <<'NODE'
+          import crypto from "node:crypto";
+          import fs from "node:fs";
+
           const API_BASE_URL = process.env.GAG_API_BASE_URL;
 
           if (!API_BASE_URL) {
@@ -34,30 +40,14 @@ jobs:
             { name: "Legendary Sprinkler", emoji: "🌟" },
           ];
 
-          // Weather types are compared case-insensitively against weather.type.
-          const WEATHER_TARGETS = [
-            { name: "Lightning", type: "lightning", emoji: "⚡" },
-            { name: "Bloodmoon", type: "blood-moon", emoji: "🌑" },
-            { name: "Aurora", type: "aurora-borealis", emoji: "🌌" },
-          ];
+          const WEATHER_EMOJIS = {
+            lightning: "⚡",
+            "blood-moon": "🌑",
+            "aurora-borealis": "🌌",
+          };
 
-          async function sendTelegram(text) {
-            const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
-
-            const res = await fetch(url, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                chat_id: CHAT_ID,
-                text,
-                disable_web_page_preview: true,
-              }),
-            });
-
-            if (!res.ok) {
-              const err = await res.text();
-              throw new Error(`Telegram failed: ${res.status} ${err}`);
-            }
+          function setOutput(name, value) {
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`);
           }
 
           const res = await fetch(API_URL, {
@@ -92,23 +82,56 @@ jobs:
           const seedHits = matchStock(seeds, SEED_TARGETS);
           const gearHits = matchStock(gear, GEAR_TARGETS);
 
+          function titleFromType(type) {
+            return String(type || "Unknown")
+              .split(/[-_\s]+/)
+              .filter(Boolean)
+              .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+              .join(" ");
+          }
+
+          function getTimeValue(obj, names) {
+            for (const name of names) {
+              if (obj && obj[name]) return obj[name];
+            }
+            return null;
+          }
+
+          function fmtTime(value) {
+            if (!value) return "-";
+            const date = typeof value === "number" ? new Date(value * 1000) : new Date(value);
+            if (Number.isNaN(date.getTime())) return String(value);
+            return date.toLocaleString("en-US", {
+              timeZone: "Asia/Ulaanbaatar",
+              hour12: false,
+            });
+          }
+
           // Weather is a single object. The API's `active` flag is unreliable
           // (it can stay true long after endsAt), so verify against endsAt too.
           let weatherHit = null;
           if (weather && weather.active === true) {
-            const endsAt = weather.endsAt ? new Date(weather.endsAt).getTime() : 0;
-            const stillActive = endsAt > Date.now();
+            const startsAt = getTimeValue(weather, ["startsAt", "startedAt", "startAt", "startTime", "createdAt"]);
+            const endsAtValue = getTimeValue(weather, ["endsAt", "endAt", "endTime"]);
+            const endsAt = endsAtValue ? new Date(endsAtValue).getTime() : null;
+            const stillActive = !endsAt || endsAt > Date.now();
             if (stillActive) {
-              weatherHit = WEATHER_TARGETS.find(
-                t => t.type === weather.type
-              ) || null;
+              const type = weather.type || "unknown";
+              weatherHit = {
+                type,
+                name: weather.name || titleFromType(type),
+                emoji: WEATHER_EMOJIS[type] || "🌦",
+                startsAt,
+                endsAt: endsAtValue,
+              };
             } else {
-              console.log(`Weather '${weather.type}' marked active but ended at ${weather.endsAt}; ignoring.`);
+              console.log(`Weather '${weather.type}' marked active but ended at ${endsAtValue}; ignoring.`);
             }
           }
 
           if (seedHits.length === 0 && gearHits.length === 0 && !weatherHit) {
             console.log("Nothing wanted in stock. No notification sent.");
+            setOutput("has_hits", "false");
             process.exit(0);
           }
 
@@ -122,7 +145,10 @@ jobs:
           function weatherText(item) {
             return [
               `${item.emoji} ${item.name}`,
+              `   🧾 Type: ${item.type}`,
               "   ✅ Одоо active байна",
+              `   🟢 Эхэлсэн: ${fmtTime(item.startsAt)}`,
+              `   🔴 Дуусах: ${fmtTime(item.endsAt)}`,
             ].join("\n");
           }
 
@@ -152,7 +178,32 @@ jobs:
 
           msg += "\n\n✅ Амжиж аваарай!";
 
-          await sendTelegram(msg.trimEnd());
+          const stockWindow = Math.floor(Date.now() / 1000 / (5 * 60));
+          const fingerprint = {
+            seeds: seedHits.map(({ name, quantity }) => ({ name, quantity, stockWindow })),
+            gear: gearHits.map(({ name, quantity }) => ({ name, quantity, stockWindow })),
+            weather: weatherHit
+              ? {
+                  type: weatherHit.type,
+                  name: weatherHit.name,
+                  startsAt: weatherHit.startsAt || null,
+                  endsAt: weatherHit.endsAt || null,
+                }
+              : null,
+          };
+          const hash = crypto
+            .createHash("sha256")
+            .update(JSON.stringify(fingerprint))
+            .digest("hex")
+            .slice(0, 32);
+          const cacheKey = `gag-restock-alert-v2-${hash}`;
+
+          fs.mkdirSync("alert-state", { recursive: true });
+          fs.writeFileSync(`alert-state/${cacheKey}`, JSON.stringify(fingerprint, null, 2));
+
+          setOutput("has_hits", "true");
+          setOutput("cache_key", cacheKey);
+          setOutput("message_b64", Buffer.from(msg.trimEnd(), "utf8").toString("base64"));
 
           const found = [
             ...seedHits.map(x => x.name),
@@ -163,5 +214,53 @@ jobs:
           NODE
         env:
           GAG_API_BASE_URL: ${{ secrets.GAG_API_BASE_URL }}
+
+      - name: Check alert cache
+        id: alert-cache
+        if: steps.check.outputs.has_hits == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: alert-state
+          key: ${{ steps.check.outputs.cache_key }}
+
+      - name: Send Telegram notification
+        if: steps.check.outputs.has_hits == 'true' && steps.alert-cache.outputs.cache-hit != 'true'
+        run: |
+          node --input-type=module <<'NODE'
+          const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+          const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+          const text = Buffer.from(process.env.TELEGRAM_MESSAGE_B64, "base64").toString("utf8");
+
+          async function sendTelegram(text) {
+            const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
+
+            const res = await fetch(url, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                chat_id: CHAT_ID,
+                text,
+                disable_web_page_preview: true,
+              }),
+            });
+
+            if (!res.ok) {
+              const err = await res.text();
+              throw new Error(`Telegram failed: ${res.status} ${err}`);
+            }
+          }
+
+          await sendTelegram(text);
+          NODE
+        env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_MESSAGE_B64: ${{ steps.check.outputs.message_b64 }}
+
+      - name: Save alert cache
+        if: steps.check.outputs.has_hits == 'true' && steps.alert-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: alert-state
+          key: ${{ steps.check.outputs.cache_key }}
