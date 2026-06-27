@@ -1,0 +1,191 @@
+name: Multiplier Check
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: multiplier-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check multipliers
+        id: check
+        run: |
+          node --input-type=module <<'NODE'
+          import crypto from "node:crypto";
+          import fs from "node:fs";
+
+          const API_BASE_URL = process.env.GAG_API_BASE_URL;
+
+          if (!API_BASE_URL) {
+            throw new Error("Missing GAG_API_BASE_URL variable.");
+          }
+
+          const API_URL = `${API_BASE_URL.replace(/\/+$/, "")}/multipliers`;
+          const MIN_MULTIPLIER = 2;
+
+          const TARGETS = [
+            {
+              id: "ghost-pepper",
+              name: "Ghost Pepper",
+              emoji: "🌶️",
+              url: "https://growagarden2wiki.net/crops/ghost-pepper/",
+            },
+            {
+              id: "dragons-breath",
+              name: "Dragon's Breath",
+              emoji: "🐉",
+              url: "https://growagarden2wiki.net/crops/dragons-breath/",
+            },
+          ];
+
+          function setOutput(name, value) {
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`);
+          }
+
+          function fmtTime(seconds) {
+            if (!seconds) return "-";
+            return new Date(seconds * 1000).toLocaleString("en-US", {
+              timeZone: "Asia/Ulaanbaatar",
+              hour12: false,
+            });
+          }
+
+          const res = await fetch(API_URL, {
+            headers: {
+              "Accept": "application/json",
+              "Origin": "https://growagarden2wiki.net",
+              "Referer": "https://growagarden2wiki.net/",
+              "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
+            }
+          });
+
+          if (!res.ok) {
+            throw new Error(`API failed: ${res.status}`);
+          }
+
+          const data = await res.json();
+          const items = data.items || [];
+
+          const hits = TARGETS
+            .map(target => {
+              const item = items.find(x => x.id === target.id);
+              if (!item || Number(item.multiplier) < MIN_MULTIPLIER) return null;
+              return {
+                ...target,
+                multiplier: Number(item.multiplier),
+                price: item.price ?? "-",
+                priceLabel: item.priceLabel || "-",
+              };
+            })
+            .filter(Boolean);
+
+          if (hits.length === 0) {
+            console.log("No target multiplier hit. No notification sent.");
+            setOutput("has_hits", "false");
+            process.exit(0);
+          }
+
+          function itemText(item) {
+            return [
+              `${item.emoji} ${item.name}`,
+              `   ✖️ Multiplier: ${item.multiplier}x`,
+              `   💵 Price: ${item.priceLabel}`,
+              `   🔗 ${item.url}`,
+            ].join("\n");
+          }
+
+          let msg = [
+            "🚨 Multiplier 2x hit!",
+            "",
+            "Ghost Pepper эсвэл Dragon's Breath өндөр multiplier дээр байна.",
+          ].join("\n");
+
+          for (const hit of hits) {
+            msg += `\n\n${itemText(hit)}`;
+          }
+
+          msg += [
+            "",
+            `🔄 Refreshed: ${fmtTime(data.refreshedAt)}`,
+            `⏭ Next refresh: ${fmtTime(data.nextRefreshAt)}`,
+            "",
+            "✅ Амжиж аваарай!",
+          ].join("\n");
+
+          const fingerprint = {
+            refreshedAt: data.refreshedAt || null,
+            hits: hits.map(({ id, multiplier, price }) => ({ id, multiplier, price })),
+          };
+          const hash = crypto
+            .createHash("sha256")
+            .update(JSON.stringify(fingerprint))
+            .digest("hex")
+            .slice(0, 32);
+          const cacheKey = `gag-multiplier-alert-v1-${hash}`;
+
+          fs.mkdirSync("alert-state", { recursive: true });
+          fs.writeFileSync(`alert-state/${cacheKey}`, JSON.stringify(fingerprint, null, 2));
+
+          setOutput("has_hits", "true");
+          setOutput("cache_key", cacheKey);
+          setOutput("message_b64", Buffer.from(msg.trimEnd(), "utf8").toString("base64"));
+
+          console.log("Multiplier hits:", hits.map(x => `${x.name} ${x.multiplier}x`).join(", "));
+          NODE
+        env:
+          GAG_API_BASE_URL: ${{ secrets.GAG_API_BASE_URL }}
+
+      - name: Check alert cache
+        id: alert-cache
+        if: steps.check.outputs.has_hits == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: alert-state
+          key: ${{ steps.check.outputs.cache_key }}
+
+      - name: Send Telegram notification
+        if: steps.check.outputs.has_hits == 'true' && steps.alert-cache.outputs.cache-hit != 'true'
+        run: |
+          node --input-type=module <<'NODE'
+          const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+          const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+          const text = Buffer.from(process.env.TELEGRAM_MESSAGE_B64, "base64").toString("utf8");
+
+          async function sendTelegram(text) {
+            const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
+
+            const res = await fetch(url, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                chat_id: CHAT_ID,
+                text,
+                disable_web_page_preview: true,
+              }),
+            });
+
+            if (!res.ok) {
+              const err = await res.text();
+              throw new Error(`Telegram failed: ${res.status} ${err}`);
+            }
+          }
+
+          await sendTelegram(text);
+          NODE
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_MESSAGE_B64: ${{ steps.check.outputs.message_b64 }}
+
+      - name: Save alert cache
+        if: steps.check.outputs.has_hits == 'true' && steps.alert-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: alert-state
+          key: ${{ steps.check.outputs.cache_key }}
