@@ -41,9 +41,9 @@ jobs:
 
           const MOON_TARGETS = [
             { type: "lightning", name: "Lightning", emoji: "⚡" },
-            { type: "starfall", name: "Starfall", emoji: "💫" },
-            { type: "bloodmoon", name: "Bloodmoon", emoji: "🌑" },
-            { type: "aurora", name: "Aurora", emoji: "🌌" },
+            { type: "solar-flare", name: "Starfall", emoji: "💫" },
+            { type: "blood-moon", name: "Bloodmoon", emoji: "🌑" },
+            { type: "aurora-borealis", name: "Aurora", emoji: "🌌" },
           ];
 
           function fmtTime(seconds) {
