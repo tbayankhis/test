@@ -37,7 +37,6 @@ jobs:
           // Weather types are compared case-insensitively against weather.type.
           const WEATHER_TARGETS = [
             { name: "Lightning", type: "lightning", emoji: "⚡" },
-            { name: "Starfall", type: "solar-flare", emoji: "💫" },
             { name: "Bloodmoon", type: "blood-moon", emoji: "🌑" },
             { name: "Aurora", type: "aurora-borealis", emoji: "🌌" },
           ];
