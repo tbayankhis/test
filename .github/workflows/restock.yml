@@ -32,6 +32,7 @@ jobs:
             { name: "Moon Bloom", emoji: "🌙" },
             { name: "Dragon's Breath", emoji: "🐉" },
             { name: "Venom Spitter", emoji: "☠️" },
+            { name: "Hypno Bloom", emoji: "🌀" },
           ];
 
           const GEAR_TARGETS = [

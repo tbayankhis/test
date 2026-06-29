@@ -1,0 +1,190 @@
+name: Telegram Commands
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: telegram-commands
+  cancel-in-progress: false
+
+jobs:
+  commands:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Handle Telegram commands
+        run: |
+          node --input-type=module <<'NODE'
+          const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+          const ALLOWED_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+          const API_BASE_URL = process.env.GAG_API_BASE_URL;
+
+          if (!BOT_TOKEN) {
+            throw new Error("Missing TELEGRAM_BOT_TOKEN secret.");
+          }
+          if (!ALLOWED_CHAT_ID) {
+            throw new Error("Missing TELEGRAM_CHAT_ID secret.");
+          }
+          if (!API_BASE_URL) {
+            throw new Error("Missing GAG_API_BASE_URL variable.");
+          }
+
+          const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
+          const PREDICTIONS_URL = `${API_BASE_URL.replace(/\/+$/, "")}/predictions`;
+
+          const SEED_TARGETS = [
+            { id: "moon-bloom", name: "Moon Bloom", emoji: "🌙" },
+            { id: "dragons-breath", name: "Dragon's Breath", emoji: "🐉" },
+            { id: "venom-spitter", name: "Venom Spitter", emoji: "☠️" },
+            { id: "hypno-bloom", name: "Hypno Bloom", emoji: "🌀" },
+          ];
+
+          async function telegram(method, body) {
+            const res = await fetch(`${TELEGRAM_API}/${method}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            });
+
+            const data = await res.json().catch(() => null);
+            if (!res.ok || !data?.ok) {
+              throw new Error(`Telegram ${method} failed: ${res.status} ${JSON.stringify(data)}`);
+            }
+            return data.result;
+          }
+
+          async function sendTelegram(chatId, text, replyToMessageId) {
+            return telegram("sendMessage", {
+              chat_id: chatId,
+              text,
+              reply_to_message_id: replyToMessageId,
+              disable_web_page_preview: true,
+            });
+          }
+
+          function fmtTime(seconds) {
+            if (!seconds) return "-";
+            return new Date(seconds * 1000).toLocaleString("en-US", {
+              timeZone: "Asia/Ulaanbaatar",
+              hour12: false,
+            });
+          }
+
+          function fmtDuration(seconds) {
+            const totalMinutes = Math.max(1, Math.round(seconds / 60));
+            const days = Math.floor(totalMinutes / (24 * 60));
+            const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+            const minutes = totalMinutes % 60;
+            const parts = [];
+            if (days > 0) parts.push(`${days}ө`);
+            if (hours > 0) parts.push(`${hours}ц`);
+            if (minutes > 0 || parts.length === 0) parts.push(`${minutes}м`);
+            return parts.join(" ");
+          }
+
+          async function getRestockText() {
+            const res = await fetch(PREDICTIONS_URL, {
+              headers: {
+                "Accept": "application/json",
+                "Origin": "https://growagarden2wiki.net",
+                "Referer": "https://growagarden2wiki.net/",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
+              }
+            });
+
+            if (!res.ok) {
+              throw new Error(`API failed: ${res.status}`);
+            }
+
+            const data = await res.json();
+            const seeds = data.shops?.seeds?.eachItem || [];
+            const nowSec = Math.floor(Date.now() / 1000);
+
+            const rows = SEED_TARGETS
+              .map(target => {
+                const item = seeds.find(x => x.id === target.id);
+                if (!item?.nextAt) return null;
+                return {
+                  ...target,
+                  nextAt: item.nextAt,
+                  quantity: item.quantity ?? "-",
+                  secondsLeft: item.nextAt - nowSec,
+                };
+              })
+              .filter(Boolean)
+              .sort((a, b) => a.nextAt - b.nextAt);
+
+            if (rows.length === 0) {
+              return [
+                "🌱 Target seed restock",
+                "",
+                "Одоогоор target seed prediction олдсонгүй.",
+              ].join("\n");
+            }
+
+            let msg = [
+              "🌱 Target seed restock",
+              "",
+              "Дараагийн restock цагууд:",
+            ].join("\n");
+
+            for (const item of rows) {
+              const timeLeft = item.secondsLeft > 0 ? fmtDuration(item.secondsLeft) : "одоо";
+              msg += [
+                "",
+                `${item.emoji} ${item.name}`,
+                `   📦 Тоо: ${item.quantity}`,
+                `   🕐 ${timeLeft} дараа`,
+                `   📅 ${fmtTime(item.nextAt)}`,
+              ].join("\n");
+            }
+
+            return msg;
+          }
+
+          const updates = await telegram("getUpdates", {
+            limit: 100,
+            timeout: 0,
+            allowed_updates: ["message"],
+          });
+
+          if (updates.length === 0) {
+            console.log("No Telegram updates.");
+            process.exit(0);
+          }
+
+          let maxUpdateId = 0;
+
+          try {
+            for (const update of updates) {
+              maxUpdateId = Math.max(maxUpdateId, update.update_id);
+              const message = update.message;
+              const text = message?.text || "";
+              const chatId = message?.chat?.id;
+              const isAllowedChat = String(chatId) === String(ALLOWED_CHAT_ID);
+              const isRestockCommand = /^\/restock(?:@\w+)?(?:\s|$)/i.test(text);
+
+              if (!message || !isAllowedChat || !isRestockCommand) {
+                continue;
+              }
+
+              const reply = await getRestockText();
+              await sendTelegram(chatId, reply, message.message_id);
+              console.log(`Handled /restock for chat ${chatId}.`);
+            }
+          } finally {
+            if (maxUpdateId > 0) {
+              await telegram("getUpdates", {
+                offset: maxUpdateId + 1,
+                limit: 1,
+                timeout: 0,
+                allowed_updates: ["message"],
+              });
+              console.log(`Acknowledged Telegram updates through ${maxUpdateId}.`);
+            }
+          }
+          NODE
+        env:
+          GAG_API_BASE_URL: ${{ secrets.GAG_API_BASE_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

@@ -33,13 +33,16 @@ jobs:
               id: "ghost-pepper",
               name: "Ghost Pepper",
               emoji: "🌶️",
-              url: "https://growagarden2wiki.net/crops/ghost-pepper/",
             },
             {
               id: "dragons-breath",
               name: "Dragon's Breath",
               emoji: "🐉",
-              url: "https://growagarden2wiki.net/crops/dragons-breath/",
+            },
+            {
+              id: "hypno-bloom",
+              name: "Hypno Bloom",
+              emoji: "🌀",
             },
           ];
 
@@ -95,14 +98,13 @@ jobs:
               `${item.emoji} ${item.name}`,
               `   ✖️ Multiplier: ${item.multiplier}x`,
               `   💵 Price: ${item.priceLabel}`,
-              `   🔗 ${item.url}`,
             ].join("\n");
           }
 
           let msg = [
             "🚨 Multiplier 2x hit!",
             "",
-            "Ghost Pepper эсвэл Dragon's Breath өндөр multiplier дээр байна.",
+            "Таны target crop өндөр multiplier дээр байна.",
           ].join("\n");
 
           for (const hit of hits) {
